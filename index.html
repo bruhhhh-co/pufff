@@ -164,6 +164,9 @@
     if (diff<60000) return 'just now';
     return fmtDuration(diff)+' ago';
   }
+  function fmtDateTime(ts) {
+    return new Date(ts).toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+  }
 
   function maybeRender() {
     if (currentUser && !settingsOpen) render();
@@ -420,7 +423,7 @@
           '<div class="history-row">'+
             icon+
             '<span class="history-substance" style="color:'+cfg.dark+'">'+cfg.label+'</span>'+
-            '<span class="history-time">'+relTime(l.ts)+'</span>'+
+            '<span class="history-time">'+fmtDateTime(l.ts)+'</span>'+
             '<button class="del-btn" aria-label="Delete entry" onclick="deleteLog(\''+l.id+'\')">'+iconSvg(X_PATH,'currentColor',13)+'</button>'+
           '</div>';
       }).join('')+'</div>';
