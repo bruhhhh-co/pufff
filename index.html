@@ -150,7 +150,10 @@
   }
   function startOfDay(ts) {
     var d = new Date(ts);
-    d.setHours(0,0,0,0);
+    d.setHours(6,0,0,0);
+    if (d.getTime() > ts) {
+      d.setDate(d.getDate() - 1);
+    }
     return d.getTime();
   }
   function dayLabel(ts) {
