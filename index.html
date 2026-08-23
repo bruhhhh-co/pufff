@@ -53,6 +53,16 @@
   .stat-cell { background:var(--surface-2); border-radius:10px; padding:10px 8px; text-align:center; }
   .stat-label { font-size:10.5px; color:var(--text-muted); margin-bottom:4px; }
   .stat-value { font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:500; }
+  .goal-card { background:var(--surface); border:1px solid rgba(91,154,147,0.35); border-radius:14px; padding:16px 16px 14px; margin-bottom:20px; }
+  .goal-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; gap:10px; }
+  .goal-label { font-size:12px; font-weight:600; color:#8FC4BC; }
+  .goal-progress-text { font-size:12.5px; color:var(--text-secondary); margin-bottom:6px; }
+  .goal-progress-bar { width:100%; height:8px; background:var(--surface-2); border-radius:5px; overflow:hidden; margin-bottom:14px; }
+  .goal-progress-fill { height:100%; border-radius:5px; transition: width 0.2s ease; }
+  .craving-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:14px; padding-top:14px; border-top:1px solid var(--divider); }
+  .craving-count { font-size:12px; color:var(--text-muted); }
+  .craving-btn { border:1px solid rgba(91,154,147,0.4); border-radius:9px; padding:8px 14px; background:rgba(91,154,147,0.16); color:#8FC4BC; font-family:'Inter',sans-serif; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap; transition: transform 0.12s ease; }
+  .craving-btn:active { transform: scale(0.97); }
   .savings-card { background:var(--surface); border:1px solid rgba(192,133,82,0.33); border-radius:14px; padding:16px 16px 14px; margin-bottom:20px; }
   .savings-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:10px; }
   .savings-label { font-size:12px; font-weight:600; color:#E7B98A; }
@@ -119,14 +129,16 @@
     nicotine: { label:'Nicotine', accent:'#C08552', soft:'rgba(192,133,82,0.16)', dark:'#E7B98A' },
     weed: { label:'Weed', accent:'#7C9473', soft:'rgba(124,148,115,0.18)', dark:'#AEC2A2' }
   };
-  var DEFAULT_NIC_SETTINGS = { packPrice:21, daysPerPack:3.5 };
+  var DEFAULT_NIC_SETTINGS = { packPrice:21, daysPerPack:3.5, dailyGoal:10 };
 
   var logs = [];
   var packLogs = [];
+  var cravingLogs = [];
   var nicSettings = DEFAULT_NIC_SETTINGS;
   var chartSubstance = 'nicotine';
   var confirmClear = false;
   var settingsOpen = false;
+  var goalSettingsOpen = false;
   var saveError = false;
   var authResolved = false;
   var currentUser = null;
@@ -170,7 +182,7 @@
   }
 
   function maybeRender() {
-    if (currentUser && !settingsOpen) render();
+    if (currentUser && !settingsOpen && !goalSettingsOpen) render();
   }
 
   function friendlyAuthError(err) {
@@ -223,6 +235,12 @@
       if (saveError) { saveError = false; maybeRender(); }
     }).catch(function(){ saveError = true; maybeRender(); });
   }
+  function saveCravingLogsRemote() {
+    if (!currentUser) return;
+    set(ref(db, 'users/'+currentUser.uid+'/cravingLogs'), cravingLogs).then(function(){
+      if (saveError) { saveError = false; maybeRender(); }
+    }).catch(function(){ saveError = true; maybeRender(); });
+  }
 
   function addLog(substance) {
     logs.push({ id: Date.now()+'-'+Math.random().toString(36).slice(2,8), substance: substance, ts: Date.now() });
@@ -260,10 +278,23 @@
   function saveSettings() {
     var packPrice = Math.max(0, parseFloat(document.getElementById('set-packPrice').value) || 0);
     var daysPerPack = Math.max(0.1, parseFloat(document.getElementById('set-daysPerPack').value) || 1);
-    nicSettings = { packPrice:packPrice, daysPerPack:daysPerPack };
+    nicSettings = { packPrice:packPrice, daysPerPack:daysPerPack, dailyGoal: nicSettings.dailyGoal || 10 };
     settingsOpen = false;
     render();
     saveSettingsRemote();
+  }
+  function toggleGoalSettings() { goalSettingsOpen = !goalSettingsOpen; render(); }
+  function saveGoal() {
+    var dailyGoal = Math.max(1, parseInt(document.getElementById('set-dailyGoal').value, 10) || 10);
+    nicSettings = { packPrice: nicSettings.packPrice, daysPerPack: nicSettings.daysPerPack, dailyGoal: dailyGoal };
+    goalSettingsOpen = false;
+    render();
+    saveSettingsRemote();
+  }
+  function logCraving() {
+    cravingLogs.push({ id: Date.now()+'-'+Math.random().toString(36).slice(2,8), ts: Date.now() });
+    maybeRender();
+    saveCravingLogsRemote();
   }
 
   function computeStats(now) {
@@ -288,6 +319,46 @@
     var actualCost = packLogs.length * nicSettings.packPrice;
     var expectedCost = daysSinceStart * baselineCostPerDay;
     return { saved: expectedCost-actualCost, startTs: startTs, lastTs: lastTs, packsLogged: packLogs.length };
+  }
+  function computeDailyNicotineCounts() {
+    var map = {};
+    logs.forEach(function(l){
+      if (l.substance !== 'nicotine') return;
+      var d = startOfDay(l.ts);
+      map[d] = (map[d]||0) + 1;
+    });
+    return map;
+  }
+  function computeGoalStats(now, dailyGoal) {
+    var nicLogs = logs.filter(function(l){ return l.substance === 'nicotine'; });
+    if (nicLogs.length === 0) {
+      return { hasData:false, todayCount:0, currentStreak:0, bestStreak:0 };
+    }
+    var counts = computeDailyNicotineCounts();
+    var todayStart = startOfDay(now);
+    var todayCount = counts[todayStart] || 0;
+    var earliestTs = nicLogs.reduce(function(min,l){ return l.ts<min?l.ts:min; }, nicLogs[0].ts);
+    var trackingStart = startOfDay(earliestTs);
+
+    var currentStreak = 0;
+    var day = todayStart - DAY_MS;
+    while (day >= trackingStart) {
+      var c = counts[day] || 0;
+      if (c <= dailyGoal) { currentStreak++; day -= DAY_MS; }
+      else break;
+    }
+
+    var bestStreak = 0;
+    var run = 0;
+    var d2 = trackingStart;
+    while (d2 <= todayStart - DAY_MS) {
+      var c2 = counts[d2] || 0;
+      if (c2 <= dailyGoal) { run++; if (run > bestStreak) bestStreak = run; }
+      else run = 0;
+      d2 += DAY_MS;
+    }
+
+    return { hasData:true, todayCount:todayCount, currentStreak:currentStreak, bestStreak:bestStreak };
   }
   function computeChartData(now) {
     var days = [];
@@ -330,6 +401,7 @@
   function renderApp() {
     var now = Date.now();
     var stats = computeStats(now);
+    var goalStats = computeGoalStats(now, nicSettings.dailyGoal || 10);
     var nicSavings = computeNicotineSavings(now);
     var chartData = computeChartData(now);
     var maxCount = 1;
@@ -358,6 +430,44 @@
         '<div class="stat-cell"><div class="stat-label">'+cfg.label+' today</div><div class="stat-value" style="color:'+cfg.dark+'">'+s.todayCount+'</div></div>'+
         '<div class="stat-cell"><div class="stat-label">'+cfg.label+' 7-day avg</div><div class="stat-value" style="color:'+cfg.dark+'">'+s.weekAvg+'/day</div></div>';
     }).join('');
+
+    var goalPct = Math.min(100, Math.round((goalStats.todayCount / (nicSettings.dailyGoal||10)) * 100));
+    var goalColor = goalStats.todayCount <= (nicSettings.dailyGoal||10) ? '#5B9A93' : '#C08552';
+    var goalBodyHtml;
+    if (!goalStats.hasData) {
+      goalBodyHtml = '<div class="savings-sub">Log a nicotine entry to start tracking your streak.</div>';
+    } else {
+      goalBodyHtml = ''+
+        '<div class="goal-progress-text">Today: '+goalStats.todayCount+' / '+(nicSettings.dailyGoal||10)+'</div>'+
+        '<div class="goal-progress-bar"><div class="goal-progress-fill" style="width:'+goalPct+'%;background:'+goalColor+'"></div></div>'+
+        '<div class="stats-row" style="margin-bottom:0;">'+
+          '<div class="stat-cell"><div class="stat-label">Current streak</div><div class="stat-value" style="color:#8FC4BC">'+goalStats.currentStreak+'d</div></div>'+
+          '<div class="stat-cell"><div class="stat-label">Best streak</div><div class="stat-value" style="color:#8FC4BC">'+goalStats.bestStreak+'d</div></div>'+
+        '</div>';
+    }
+    var goalSettingsPanelHtml = '';
+    if (goalSettingsOpen) {
+      goalSettingsPanelHtml = ''+
+        '<div class="settings-panel">'+
+          '<div class="settings-row"><label>Max nicotine logs per day</label><input id="set-dailyGoal" type="number" step="1" value="'+(nicSettings.dailyGoal||10)+'"></div>'+
+          '<button class="settings-save-btn" onclick="saveGoal()">Save</button>'+
+        '</div>';
+    }
+    var cravingHtml = ''+
+      '<div class="craving-row">'+
+        '<div class="craving-count">'+cravingLogs.length+' craving'+(cravingLogs.length===1?'':'s')+' resisted</div>'+
+        '<button class="craving-btn" onclick="logCraving()">I resisted one</button>'+
+      '</div>';
+    var goalHtml = ''+
+      '<div class="goal-card">'+
+        '<div class="goal-head">'+
+          '<span class="goal-label">Nicotine goal</span>'+
+          '<span class="edit-link" onclick="toggleGoalSettings()">'+(goalSettingsOpen?'Close':'Edit goal')+'</span>'+
+        '</div>'+
+        goalBodyHtml+
+        goalSettingsPanelHtml+
+        cravingHtml+
+      '</div>';
 
     var savingsBodyHtml;
     if (nicSavings) {
@@ -447,6 +557,7 @@
       '<h1 class="title">Time since last</h1>'+
       '<div class="hero-grid">'+heroHtml+'</div>'+
       '<div class="stats-row">'+statsHtml+'</div>'+
+      goalHtml+
       savingsHtml+
       '<div class="section-head"><span class="section-title">Last 14 days</span><div class="tab-group">'+tabsHtml+'</div></div>'+
       '<div class="chart-wrap">'+barsHtml+'</div>'+
@@ -483,7 +594,9 @@
         var data = snapshot.val() || {};
         logs = data.logs || [];
         packLogs = data.packLogs || [];
+        cravingLogs = data.cravingLogs || [];
         nicSettings = data.nicSettings || DEFAULT_NIC_SETTINGS;
+        if (nicSettings.dailyGoal == null) nicSettings.dailyGoal = 10;
         dataLoaded = true;
         maybeRender();
       }, function(){
@@ -492,7 +605,7 @@
         maybeRender();
       });
     } else {
-      logs = []; packLogs = []; nicSettings = DEFAULT_NIC_SETTINGS;
+      logs = []; packLogs = []; cravingLogs = []; nicSettings = DEFAULT_NIC_SETTINGS;
     }
     render();
   });
@@ -507,6 +620,9 @@
   window.doClearAll = doClearAll;
   window.toggleSettings = toggleSettings;
   window.saveSettings = saveSettings;
+  window.toggleGoalSettings = toggleGoalSettings;
+  window.saveGoal = saveGoal;
+  window.logCraving = logCraving;
   window.doLogin = doLogin;
   window.doSignup = doSignup;
   window.doLogout = doLogout;
